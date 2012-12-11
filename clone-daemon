@@ -1,0 +1,151 @@
+#!/bin/bash
+PROCESSPID=$$
+
+showhelp () {
+echo "
+Usage:  $0 [PAREMETRS]  Run the specified command
+    $0 --help       Display this help and exit
+    $0 --version        Output version information and exit
+
+Parametrs:
+    -i - Daemon unique interface name
+    -с - Command to run
+    -n - Number of simultaneously running command clones. Must be integer and greater than zero
+    -s - Timeout for the eternal loop. Must be integer and greater than zero
+    -l - For the eternal loop
+"
+    exit $?
+}
+
+case $1 in
+    "" | "--help" | "--help" | "--version" | "-version") showhelp;;
+esac
+
+# Вечный цикл
+loopWhile=0
+# Время задержки в секундах
+sleepTime=null
+# Лимит одновременно запущенных процессов
+countCloneLimit=0
+
+# Получаем параметры
+# Очень хорошо написано про них тут http://www.ibm.com/developerworks/ru/library/l-bash-parameters/index.html
+while getopts ":i:c:n:s:l" optname
+do
+    case "$optname" in
+    "l")
+        loopWhile=1;;
+    "s")
+        sleepTime=$OPTARG;;
+    "n")
+        countCloneLimit=$OPTARG;;
+    "c")
+        command=$OPTARG;;
+    "i")
+	uname=$OPTARG;;
+    "?")
+        echo "Unknown option -$OPTARG"
+        exit 1
+        ;;
+    ":")
+        echo "No argument value for option -$OPTARG. Run '$0 --help'"
+        exit 1
+        ;;
+    esac
+done
+
+PIDFILESDIR=/tmp
+PIDSFILE=$PIDFILESDIR/$uname.pids
+
+sighup()
+{
+    for pid in `cat $PIDSFILE`; do
+        kill -HUP $pid
+    done
+}
+
+sigterm()
+{
+    for pid in `cat $PIDSFILE`; do
+        kill -TERM $pid
+    done
+
+    exit 0
+}
+
+trap 'sighup' HUP
+trap 'sigterm' TERM
+
+# Проверяем команду на выполнение. Там обязательно должны быть буквы
+if [ `echo $command | grep -c [^0-9]` = "0" ]
+then
+    echo "Wrong command. '$command'. Run '$0 --help'"
+    exit 1
+fi
+
+# sleepTime должен быть числом и > 0
+if [ "$sleepTime" != "null" ] && [ `echo $sleepTime | grep -c [^0-9]` = "1" ] || [ "$sleepTime" = "0" ]
+then
+    echo "  Invalid parameter [-s]. Run '$0 --help'"
+    exit 1
+fi
+
+# countCloneLimit должен быть числом и > 0
+if [ `echo "$countCloneLimit" | grep -c [^0-9]` = "1" ] || [ $countCloneLimit = "0" ]
+then
+    echo "  Invalid parameter [-c]. Run '$0 --help'"
+    exit 1
+fi
+
+# Экранируем $command
+escapeCommand=`echo "$command" | sed -e "s/\//\\\\\\\\\\//g" | sed "s/'/'\"'\"'/g"`
+
+
+# Делаем бесконечный цикл
+while(true)
+do
+    CURPIDS=`cat $PIDSFILE`
+    > $PIDSFILE
+
+    # test for running processes
+    for pid in $CURPIDS; do
+        if kill -0 $pid > /dev/null 2>&1; then
+	    echo $pid >> $PIDSFILE
+	fi
+    done
+
+    countClone=0
+    # Получаем список pid запущенных процессов "$command"
+    pidList=`cat $PIDSFILE`
+
+    # Если в $pidList есть цифры, значит процессы есть и значит, мы их считаем
+    if [ `echo $pidList | grep -c [0-9]` \> 0 ]
+    then
+        # Считаем общее количество процессов
+        countClone=`echo "$pidList" | wc -l`
+        echo $countClone
+    fi
+
+    # Считаем сколько процессов нужно запустить
+    countNeed=`expr "$countCloneLimit" - "$countClone"`
+    pidString=`echo $pidList | sed -e "s/[^ 0-9]//g"`
+
+    for i in $(seq 1 $countNeed);
+    do
+        eval "nohup $command $pidString >> /dev/null 2>&1 &"
+	echo $! >> $PIDSFILE
+    done
+
+    # Если не установлен флаг вечного цикла, то выходим из зацикливания
+    if [ "$loopWhile" = "0" ]
+    then
+        exit $?
+    fi
+
+    # Засыпаем, чтобы не делать бесконечный цикл
+    sleep $sleepTime
+done
+
+exit $?
+
+
